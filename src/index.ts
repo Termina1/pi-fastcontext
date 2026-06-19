@@ -138,6 +138,7 @@ Rules:
 - All paths/patterns are relative to the repository root; never start paths with '/'.
 - If the repo name appears in an absolute-looking path, strip it and use the path relative to repo root.
 - Prefer GREP/GLOB first, READ only likely files/ranges.
+- Prefer production/source code citations. Cite tests, YAML fixtures, or examples only when the user asks for them or no source-code evidence exists.
 - Do not invent files or line numbers.
 - Do not cite wildcard/glob paths like cache-*.yaml; every citation must be a concrete existing file.
 - Finish as soon as you have enough evidence, ideally within 3 tool turns.
