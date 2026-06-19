@@ -139,6 +139,7 @@ Rules:
 - If the repo name appears in an absolute-looking path, strip it and use the path relative to repo root.
 - Prefer GREP/GLOB first, READ only likely files/ranges.
 - Do not invent files or line numbers.
+- Do not cite wildcard/glob paths like cache-*.yaml; every citation must be a concrete existing file.
 - Finish as soon as you have enough evidence, ideally within 3 tool turns.
 - Final response must contain at most ${MAX_FINAL_CITATIONS} citations; one line per citation; reason <= 8 words.
 - Always close the XML tag. Final response must be exactly:
@@ -415,7 +416,7 @@ function extractFinal(content: string): { final: string; partial: boolean } {
   return { final: "", partial: false };
 }
 
-const CITATION_RX = /((?:[A-Za-z0-9_.+@ -]+\/)*[A-Za-z0-9_.+@ -]+):(\d+)(?:-(\d+))?/g;
+const CITATION_RX = /(\/?(?:[A-Za-z0-9_.+@ -]+\/)*[A-Za-z0-9_.+@ -]+):(\d+)(?:-(\d+))?/g;
 
 async function normalizeFinalCitations(root: string, final: string): Promise<string> {
   const lines: string[] = [];
@@ -432,6 +433,20 @@ async function normalizeFinalCitations(root: string, final: string): Promise<str
     lines.push(normalized);
   }
   return lines.join("\n");
+}
+
+async function filterInvalidCitationLines(root: string, final: string): Promise<{ final: string; dropped: number }> {
+  const kept: string[] = [];
+  let dropped = 0;
+  for (const line of final.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    const citations = await validateCitations(root, line);
+    if (citations.length === 0 || citations.some((citation) => !citation.exists || !citation.inBounds)) {
+      dropped++;
+      continue;
+    }
+    kept.push(line);
+  }
+  return { final: kept.join("\n"), dropped };
 }
 
 async function validateCitations(root: string, final: string): Promise<Citation[]> {
@@ -559,6 +574,11 @@ async function runFastContext(options: RunOptions): Promise<{ text: string; deta
     if (lines.length > MAX_FINAL_CITATIONS) {
       final = lines.slice(0, MAX_FINAL_CITATIONS).join("\n");
       outputWarnings.push(`FastContext returned ${lines.length} final lines; truncated to first ${MAX_FINAL_CITATIONS} citations`);
+    }
+    const filtered = await filterInvalidCitationLines(root, final);
+    final = filtered.final;
+    if (filtered.dropped > 0) {
+      outputWarnings.push(`Dropped ${filtered.dropped} invalid citation line(s)`);
     }
   }
 
