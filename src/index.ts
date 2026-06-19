@@ -172,14 +172,34 @@ function normalizeRel(raw: string, root: string): string {
   rel = rel.replace(/^\/+/, "");
   rel = rel.replace(/^\.\//, "");
   const base = path.basename(root);
-  // FastContext sometimes emits /repo-name/path after seeing a repo path.
+  // FastContext often emits /repo-name/path after SWE-bench-style Docker mounts.
   if (rel === base) rel = "";
   if (rel.startsWith(base + "/")) rel = rel.slice(base.length + 1);
   return rel;
 }
 
-function resolveSafe(root: string, raw: string): { abs: string; rel: string; error?: string } {
-  const rel = normalizeRel(raw, root);
+function relCandidates(raw: string, root: string): string[] {
+  const original = stripAt(String(raw || "")).trim().replaceAll("\\", "/");
+  const stripped = original.replace(/^\/+/, "").replace(/^\.\//, "");
+  const base = path.basename(root);
+  const candidates = [normalizeRel(raw, root)];
+
+  // Match sdougbrown/fastcontext-harness resolve_path() behavior:
+  // 1. /cmd/main.go -> {root}/cmd/main.go (handled by normalizeRel)
+  // 2. /repo-name/cmd/main.go or /wrong-prefix/cmd/main.go -> {root}/cmd/main.go
+  const parts = stripped.split("/");
+  if (parts.length > 1) {
+    candidates.push(parts.slice(1).join("/"));
+  }
+  if (parts[0] === base && parts.length > 1) {
+    candidates.push(parts.slice(1).join("/"));
+  }
+
+  return [...new Set(candidates.map((c) => c.replace(/^\/+/, "").replace(/^\.\//, "")))];
+}
+
+function resolveSafe(root: string, raw: string, relOverride?: string): { abs: string; rel: string; error?: string } {
+  const rel = relOverride ?? normalizeRel(raw, root);
   if (rel.includes("\0")) return { abs: root, rel, error: "NUL byte in path" };
   if (rel.split("/").includes("..")) return { abs: root, rel, error: "path must not contain '..'" };
   const abs = path.resolve(root, rel || ".");
@@ -188,6 +208,22 @@ function resolveSafe(root: string, raw: string): { abs: string; rel: string; err
     return { abs, rel, error: `path escapes repository: ${raw}` };
   }
   return { abs, rel };
+}
+
+async function resolveExistingSafe(root: string, raw: string): Promise<{ abs: string; rel: string; error?: string; corrected?: boolean; tried: string[] }> {
+  const tried: string[] = [];
+  let first: { abs: string; rel: string; error?: string } | undefined;
+  for (const rel of relCandidates(raw, root)) {
+    const resolved = resolveSafe(root, raw, rel);
+    if (!first) first = resolved;
+    if (resolved.error) continue;
+    tried.push(resolved.rel || ".");
+    if (await exists(resolved.abs)) {
+      return { ...resolved, corrected: resolved.rel !== normalizeRel(raw, root), tried };
+    }
+  }
+  const fallback = first ?? resolveSafe(root, raw);
+  return { ...fallback, tried };
 }
 
 function truncate(s: string, max = MAX_TOOL_CHARS): string {
@@ -270,9 +306,9 @@ async function listFiles(root: string, start = root): Promise<string[]> {
 
 async function readTool(root: string, args: Record<string, any>): Promise<string> {
   const rawPath = String(args.path || "");
-  const { abs, rel, error } = resolveSafe(root, rawPath);
+  const { abs, rel, error, corrected, tried } = await resolveExistingSafe(root, rawPath);
   if (error) return `ERR: ${error}`;
-  if (!(await exists(abs))) return `ERR: file not found: ${rawPath}. Use GLOB/GREP to discover valid relative paths.`;
+  if (!(await exists(abs))) return `ERR: file not found: ${rawPath}. Tried: ${tried.join(", ") || "(none)"}. Use GLOB/GREP to discover valid relative paths.`;
   if (!(await isFile(abs))) {
     if (await isDir(abs)) {
       const entries = (await fs.readdir(abs)).slice(0, 80).join("\n");
@@ -287,22 +323,31 @@ async function readTool(root: string, args: Record<string, any>): Promise<string
   const limit = Math.max(1, Math.min(Number(args.limit || 80), MAX_READ_LINES));
   const end = Math.min(lines.length, offset + limit - 1);
   const body = lines.slice(offset - 1, end).map((line, idx) => `${offset + idx}:${line}`).join("\n");
-  return truncate(`FILE ${rel} lines ${offset}-${end}/${lines.length}\n${body}`);
+  const correction = corrected ? `\n[Path corrected from ${rawPath} to ${rel}]` : "";
+  return truncate(`FILE ${rel} lines ${offset}-${end}/${lines.length}${correction}\n${body}`);
 }
 
 async function globTool(root: string, args: Record<string, any>): Promise<string> {
   const raw = String(args.pattern || "");
-  const pattern = normalizeRel(raw, root);
-  if (!pattern) return "ERR: empty glob pattern";
-  if (pattern.split("/").includes("..")) return "ERR: glob pattern must not contain '..'";
-  const rx = globToRegExp(pattern);
-  const matches = (await listFiles(root)).filter((rel) => rx.test(rel)).sort();
+  const patterns = relCandidates(raw, root).filter(Boolean);
+  if (patterns.length === 0) return "ERR: empty glob pattern";
+  if (patterns.some((pattern) => pattern.split("/").includes(".."))) return "ERR: glob pattern must not contain '..'";
+  const allFiles = await listFiles(root);
+  let matches: string[] = [];
+  let usedPattern = patterns[0];
+  for (const pattern of patterns) {
+    const rx = globToRegExp(pattern);
+    matches = allFiles.filter((rel) => rx.test(rel)).sort();
+    usedPattern = pattern;
+    if (matches.length > 0) break;
+  }
   if (matches.length === 0) {
-    return `No files matched ${raw}. Try broader patterns like '**/*.go', '**/*.ts', '**/*.h', or a keyword GREP.`;
+    return `No files matched ${raw}. Tried: ${patterns.join(", ")}. Try broader patterns like '**/*.go', '**/*.ts', '**/*.h', or a keyword GREP.`;
   }
   const shown = matches.slice(0, MAX_GLOB_RESULTS);
   const more = matches.length > shown.length ? `\n... [${matches.length - shown.length} more]` : "";
-  return truncate(shown.join("\n") + more);
+  const correction = usedPattern !== patterns[0] ? `[Pattern corrected from ${raw} to ${usedPattern}]\n` : "";
+  return truncate(correction + shown.join("\n") + more);
 }
 
 async function grepTool(root: string, args: Record<string, any>): Promise<string> {
@@ -310,9 +355,9 @@ async function grepTool(root: string, args: Record<string, any>): Promise<string
   if (!pattern) return "ERR: empty grep pattern";
   let rx: RegExp;
   try { rx = new RegExp(pattern, "i"); } catch (e: any) { return `ERR: invalid regex ${pattern}: ${e.message}`; }
-  const { abs, rel, error } = resolveSafe(root, String(args.path || ""));
+  const { abs, rel, error, tried } = await resolveExistingSafe(root, String(args.path || ""));
   if (error) return `ERR: ${error}`;
-  if (!(await exists(abs))) return `ERR: path not found: ${args.path || ""}. Use a relative repo path or omit path.`;
+  if (!(await exists(abs))) return `ERR: path not found: ${args.path || ""}. Tried: ${tried.join(", ") || "(none)"}. Use a relative repo path or omit path.`;
   let files: string[] = [];
   if (await isFile(abs)) files = [path.relative(root, abs).replaceAll(path.sep, "/")];
   else files = await listFiles(root, abs);
@@ -374,15 +419,15 @@ async function validateCitations(root: string, final: string): Promise<Citation[
   const rx = /((?:[A-Za-z0-9_.+@ -]+\/)*[A-Za-z0-9_.+@ -]+):(\d+)(?:-(\d+))?/g;
   for (const line of final.split(/\r?\n/)) {
     for (const m of line.matchAll(rx)) {
-      const rel = normalizeRel(m[1], root);
+      const resolved = await resolveExistingSafe(root, m[1]);
+      const rel = resolved.rel;
       const start = Number(m[2]);
       const end = Number(m[3] || m[2]);
-      const { abs, error } = resolveSafe(root, rel);
       let fileExists = false;
       let inBounds = false;
-      if (!error && await isFile(abs)) {
+      if (!resolved.error && await isFile(resolved.abs)) {
         fileExists = true;
-        const n = (await fs.readFile(abs, "utf8")).split(/\r?\n/).length;
+        const n = (await fs.readFile(resolved.abs, "utf8")).split(/\r?\n/).length;
         inBounds = start >= 1 && end >= start && end <= n;
       }
       citations.push({ path: rel, start, end, line: line.trim(), exists: fileExists, inBounds });

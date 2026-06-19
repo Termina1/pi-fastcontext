@@ -8,11 +8,17 @@ This extension **does not register FastContext as a normal Pi chat model**. Inst
 - `GREP(pattern, path?)`
 - `READ(path, offset?, limit?)`
 
-The wrapper executes those tools safely against the requested repository, forces a final answer after a bounded search budget, and validates returned citations.
+The wrapper executes those tools safely against the requested repository, applies a SWE-bench-style path correction layer, forces a final answer after a bounded search budget, and validates returned citations.
 
 ## Why an extension?
 
 FastContext is trained to use `READ/GLOB/GREP`, not Pi's built-in `read/grep/find/ls` directly. If you run it as a plain Pi subagent/model, it can loop on wrong paths like `/repo/src`. This extension provides the exact tool semantics FastContext expects.
+
+It also includes the path fix described by [`sdougbrown/fastcontext-harness`](https://github.com/sdougbrown/fastcontext-harness): FastContext was trained on SWE-bench Docker workspaces mounted at `/<repo-name>/`, so it may emit paths like `/myrepo/cmd/main.go` or `/cmd/main.go` even when the real checkout is `/Users/me/Work/myrepo`. The executor corrects these before running tools:
+
+1. `/cmd/main.go` → `<repo>/cmd/main.go`
+2. `/<repo-name>/cmd/main.go` → `<repo>/cmd/main.go`
+3. `/<wrong-prefix>/cmd/main.go` → `<repo>/cmd/main.go` when that target exists
 
 ## Requirements
 
