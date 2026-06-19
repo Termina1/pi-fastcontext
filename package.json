@@ -1,0 +1,31 @@
+{
+  "name": "pi-fastcontext",
+  "version": "0.1.0",
+  "description": "Pi extension that wraps Microsoft FastContext via llama.cpp for fast read-only codebase search.",
+  "type": "module",
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "fastcontext",
+    "code-search",
+    "llama.cpp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Termina1/pi-fastcontext.git"
+  },
+  "license": "MIT",
+  "scripts": {
+    "check": "tsc --noEmit --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 --lib ES2022,DOM src/index.ts || true"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
