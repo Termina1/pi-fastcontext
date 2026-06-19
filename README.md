@@ -83,8 +83,8 @@ Example config file:
 {
   "baseUrl": "http://127.0.0.1:8772/v1",
   "model": "FastContext-1.0-4B-RL-Q4_K_M.gguf",
-  "maxTurns": 4,
-  "maxTokens": 800
+  "maxTurns": 6,
+  "maxTokens": 1400
 }
 ```
 
@@ -117,8 +117,8 @@ Tool parameters:
 fast_context_search({
   query: "Find where JSON-RPC response caching is implemented",
   cwd: "/path/to/repo",          // optional, defaults to current Pi cwd
-  maxTurns: 4,                   // optional, 1..8
-  maxTokens: 800,                // optional, 128..4096
+  maxTurns: 6,                   // optional, 1..8
+  maxTokens: 1400,                // optional, 128..4096
   baseUrl: "http://.../v1",     // optional override
   model: "...",                 // optional override
   includeTranscript: false       // optional debug output in details

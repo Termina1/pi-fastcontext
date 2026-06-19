@@ -50,8 +50,8 @@ async function resolveConfig(cwd: string, overrides: FastContextConfigOverrides 
   const merged: FastContextConfig = {
     baseUrl: DEFAULT_BASE_URL,
     model: DEFAULT_MODEL,
-    maxTurns: 4,
-    maxTokens: 800,
+    maxTurns: 6,
+    maxTokens: 1400,
   };
 
   Object.assign(merged, await readConfigFile(USER_CONFIG_PATH));
@@ -66,8 +66,8 @@ async function resolveConfig(cwd: string, overrides: FastContextConfigOverrides 
 
   Object.assign(merged, Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined)));
 
-  merged.maxTurns = Math.max(1, Math.min(8, Math.floor(merged.maxTurns || 4)));
-  merged.maxTokens = Math.max(128, Math.min(4096, Math.floor(merged.maxTokens || 800)));
+  merged.maxTurns = Math.max(1, Math.min(8, Math.floor(merged.maxTurns || 6)));
+  merged.maxTokens = Math.max(128, Math.min(4096, Math.floor(merged.maxTokens || 1400)));
   return merged;
 }
 
@@ -583,8 +583,8 @@ export default function (pi: ExtensionAPI) {
       cwd: Type.Optional(Type.String({ description: "Repository root. Defaults to current Pi cwd." })),
       baseUrl: Type.Optional(Type.String({ description: "OpenAI-compatible FastContext base URL. Defaults to config/env or http://127.0.0.1:8772/v1." })),
       model: Type.Optional(Type.String({ description: "FastContext model id. Defaults to config/env or FastContext-1.0-4B-RL-Q4_K_M.gguf." })),
-      maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 8, description: "FastContext tool turns before forced finalization. Default 4." })),
-      maxTokens: Type.Optional(Type.Integer({ minimum: 128, maximum: 4096, description: "Max tokens per FastContext model response. Default 800." })),
+      maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 8, description: "FastContext tool turns before forced finalization. Default 6." })),
+      maxTokens: Type.Optional(Type.Integer({ minimum: 128, maximum: 4096, description: "Max tokens per FastContext model response. Default 1400." })),
       includeTranscript: Type.Optional(Type.Boolean({ description: "Include raw FastContext transcript in tool details. Default false." })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {

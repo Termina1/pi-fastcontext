@@ -1,6 +1,6 @@
 {
   "baseUrl": "http://127.0.0.1:8772/v1",
   "model": "FastContext-1.0-4B-RL-Q4_K_M.gguf",
-  "maxTurns": 4,
-  "maxTokens": 800
+  "maxTurns": 6,
+  "maxTokens": 1400
 }
