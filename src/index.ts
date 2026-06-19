@@ -10,6 +10,7 @@ const MAX_TOOL_CHARS = 5_000;
 const MAX_READ_LINES = 120;
 const MAX_GREP_RESULTS = 40;
 const MAX_GLOB_RESULTS = 80;
+const MAX_FINAL_CITATIONS = 12;
 
 const USER_CONFIG_PATH = path.join(process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "fastcontext.json");
 
@@ -139,7 +140,7 @@ Rules:
 - Prefer GREP/GLOB first, READ only likely files/ranges.
 - Do not invent files or line numbers.
 - Finish as soon as you have enough evidence, ideally within 3 tool turns.
-- Final response must contain at most 8 citations; one line per citation; reason <= 8 words.
+- Final response must contain at most ${MAX_FINAL_CITATIONS} citations; one line per citation; reason <= 8 words.
 - Always close the XML tag. Final response must be exactly:
 <final_answer>
 relative/path:START-END — short reason
@@ -414,9 +415,28 @@ function extractFinal(content: string): { final: string; partial: boolean } {
   return { final: "", partial: false };
 }
 
+const CITATION_RX = /((?:[A-Za-z0-9_.+@ -]+\/)*[A-Za-z0-9_.+@ -]+):(\d+)(?:-(\d+))?/g;
+
+async function normalizeFinalCitations(root: string, final: string): Promise<string> {
+  const lines: string[] = [];
+  for (const line of final.split(/\r?\n/)) {
+    const matches = [...line.matchAll(CITATION_RX)];
+    let normalized = line;
+    for (const m of matches.reverse()) {
+      const resolved = await resolveExistingSafe(root, m[1]);
+      if (resolved.error || !(await isFile(resolved.abs))) continue;
+      const replacement = `${resolved.rel}:${m[2]}${m[3] ? `-${m[3]}` : ""}`;
+      const idx = m.index ?? 0;
+      normalized = normalized.slice(0, idx) + replacement + normalized.slice(idx + m[0].length);
+    }
+    lines.push(normalized);
+  }
+  return lines.join("\n");
+}
+
 async function validateCitations(root: string, final: string): Promise<Citation[]> {
   const citations: Citation[] = [];
-  const rx = /((?:[A-Za-z0-9_.+@ -]+\/)*[A-Za-z0-9_.+@ -]+):(\d+)(?:-(\d+))?/g;
+  const rx = CITATION_RX;
   for (const line of final.split(/\r?\n/)) {
     for (const m of line.matchAll(rx)) {
       const resolved = await resolveExistingSafe(root, m[1]);
@@ -519,7 +539,7 @@ async function runFastContext(options: RunOptions): Promise<{ text: string; deta
     options.onUpdate?.({ content: [{ type: "text", text: "FastContext forcing final answer..." }] });
     messages.push({
       role: "user",
-      content: "Tool budget exhausted. Do not call any more tools. Based only on the tool results above, produce the required <final_answer> now: at most 8 lines, one relative file:START-END citation per line, reason <= 8 words, and always close </final_answer>.",
+      content: `Tool budget exhausted. Do not call any more tools. Based only on the tool results above, produce the required <final_answer> now: at most ${MAX_FINAL_CITATIONS} lines, one relative file:START-END citation per line, reason <= 8 words, and always close </final_answer>.`,
     });
     const response = await chat(options.baseUrl, options.model, messages, undefined, options.maxTokens, options.signal);
     transcript.push({ turn: "force_final", response: options.includeTranscript ? response : undefined });
@@ -534,10 +554,11 @@ async function runFastContext(options: RunOptions): Promise<{ text: string; deta
   }
 
   if (final) {
+    final = await normalizeFinalCitations(root, final);
     const lines = final.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (lines.length > 8) {
-      final = lines.slice(0, 8).join("\n");
-      outputWarnings.push(`FastContext returned ${lines.length} final lines; truncated to first 8 citations`);
+    if (lines.length > MAX_FINAL_CITATIONS) {
+      final = lines.slice(0, MAX_FINAL_CITATIONS).join("\n");
+      outputWarnings.push(`FastContext returned ${lines.length} final lines; truncated to first ${MAX_FINAL_CITATIONS} citations`);
     }
   }
 
