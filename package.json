@@ -1,15 +1,15 @@
 {
   "name": "pi-fastcontext",
-  "version": "0.1.0",
-  "description": "Pi extension that wraps Microsoft FastContext via llama.cpp for fast read-only codebase search.",
+  "version": "0.2.0",
+  "description": "Pi extension for fast local repository search with Qwen3.8 Flash and validated file:line citations.",
   "type": "module",
   "private": false,
   "keywords": [
     "pi-package",
     "pi-extension",
-    "fastcontext",
     "code-search",
-    "llama.cpp"
+    "qwen",
+    "local-llm"
   ],
   "repository": {
     "type": "git",
@@ -17,7 +17,8 @@
   },
   "license": "MIT",
   "scripts": {
-    "check": "tsc --noEmit --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 --lib ES2022,DOM src/index.ts || true"
+    "check": "tsc -p tsconfig.json",
+    "test": "tsx --test tests/*.test.ts"
   },
   "pi": {
     "extensions": [
@@ -27,5 +28,10 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
   }
 }

@@ -1,184 +1,161 @@
 # pi-fastcontext
 
-Pi extension for [Microsoft FastContext](https://github.com/microsoft/fastcontext): fast, read-only codebase search with compact `file:line` citations.
-
-This extension **does not register FastContext as a normal Pi chat model**. Instead it exposes one tool, `fast_context_search`, that runs a small FastContext tool loop with the model's native tools:
+Pi extension for fast, local, read-only repository search with Qwen3.8 Flash. It exposes one Pi tool, `fast_context_search`, which runs a bounded model loop over three repository operations:
 
 - `GLOB(pattern)`
 - `GREP(pattern, path?)`
 - `READ(path, offset?, limit?)`
 
-The wrapper executes those tools safely against the requested repository, applies a SWE-bench-style path correction layer, forces a final answer after a bounded search budget, and validates returned citations.
+The package name and public tool name are retained for existing Pi installations. The implementation no longer uses Microsoft FastContext or its SWE-bench path conventions.
 
-## Why an extension?
+## Defaults
 
-FastContext is trained to use `READ/GLOB/GREP`, not Pi's built-in `read/grep/find/ls` directly. If you run it as a plain Pi subagent/model, it can loop on wrong paths like `/repo/src`. This extension provides the exact tool semantics FastContext expects.
+```text
+base URL     http://127.0.0.1:8770/v1
+model        qwen38-flash-next-q4-nothink-p1
+tool turns   3
+max tokens   512
+thinking     disabled in every request
+citations    at most 5
+```
 
-It also includes the path fix described by [`sdougbrown/fastcontext-harness`](https://github.com/sdougbrown/fastcontext-harness): FastContext was trained on SWE-bench Docker workspaces mounted at `/<repo-name>/`, so it may emit paths like `/myrepo/cmd/main.go` or `/cmd/main.go` even when the real checkout is `/Users/me/Work/myrepo`. The executor corrects these before running tools:
+These defaults target Qwen3.8-Flash-Next UD-Q4_K_XL served by a qwen4exp-capable llama.cpp build.
 
-1. `/cmd/main.go` → `<repo>/cmd/main.go`
-2. `/<repo-name>/cmd/main.go` → `<repo>/cmd/main.go`
-3. `/<wrong-prefix>/cmd/main.go` → `<repo>/cmd/main.go` when that target exists
+## Server
 
-## Requirements
-
-1. A local OpenAI-compatible FastContext server, e.g. llama.cpp.
-2. Pi with extension support.
-
-Recommended llama.cpp server:
+The extension does not start or manage the model server. A compatible launch looks like:
 
 ```bash
 llama-server \
-  -m ~/models/FastContext-1.0-4B-RL-GGUF/FastContext-1.0-4B-RL-Q4_K_M.gguf \
-  --host 127.0.0.1 \
-  --port 8772 \
-  -ngl 99 \
-  -c 32768 \
-  --mlock
+  --model /path/to/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
+  --alias qwen38-flash-next-q4-nothink-p1 \
+  --host 127.0.0.1 --port 8770 \
+  --ctx-size 32768 --parallel 1 \
+  --n-gpu-layers 999 --flash-attn on \
+  --cache-type-k q8_0 --cache-type-v q8_0 \
+  --batch-size 512 --ubatch-size 512 \
+  --jinja --reasoning off \
+  --chat-template-kwargs '{"enable_thinking":false}'
 ```
 
-The default extension config assumes:
+Qwen3.8-Flash-Next uses the experimental `qwen4exp` architecture. Use a llama.cpp revision that supports it.
 
-```text
-baseUrl = http://127.0.0.1:8772/v1
-model   = FastContext-1.0-4B-RL-Q4_K_M.gguf
-```
-
-## Install
-
-### From GitHub
+## Installation
 
 ```bash
 pi install git:github.com/Termina1/pi-fastcontext
-# or
-pi install https://github.com/Termina1/pi-fastcontext
 ```
 
-### Local development checkout
+For this checkout:
 
 ```bash
-cd ~/Work
-git clone https://github.com/Termina1/pi-fastcontext.git
 pi install ~/Work/pi-fastcontext
 ```
 
-After install/reload, Pi gets:
-
-- tool: `fast_context_search`
-- command: `/fastcontext <query>`
-
-## Configuration
-
-Configuration is resolved in this order; later sources override earlier ones:
-
-1. Built-in defaults
-2. User config: `~/.pi/agent/fastcontext.json`
-3. Project config: `<repo>/.pi/fastcontext.json`
-4. Environment variables
-5. Per-tool parameters
-
-Example config file:
-
-```json
-{
-  "baseUrl": "http://127.0.0.1:8772/v1",
-  "model": "FastContext-1.0-4B-RL-Q4_K_M.gguf",
-  "maxTurns": 6,
-  "maxTokens": 1400
-}
-```
-
-Environment variables:
-
-```bash
-export FASTCONTEXT_BASE_URL="http://127.0.0.1:8772/v1"
-export FASTCONTEXT_MODEL="FastContext-1.0-4B-RL-Q4_K_M.gguf"
-export FASTCONTEXT_MAX_TURNS=4
-export FASTCONTEXT_MAX_TOKENS=800
-```
+Reload an existing Pi session with `/reload`.
 
 ## Usage
 
 Ask Pi to use the tool:
 
 ```text
-Use fast_context_search to find where request auth processors are implemented.
+Use fast_context_search to locate request authentication and return file:line evidence.
 ```
 
-Or run the command in interactive Pi:
+Or invoke the command:
 
 ```text
-/fastcontext find where request auth processors are implemented
+/fastcontext locate request authentication
 ```
 
-Tool parameters:
+The public tool accepts only the search query and an optional transcript flag:
 
 ```ts
 fast_context_search({
-  query: "Find where JSON-RPC response caching is implemented",
-  cwd: "/path/to/repo",          // optional, defaults to current Pi cwd
-  maxTurns: 6,                   // optional, 1..8
-  maxTokens: 1400,                // optional, 128..4096
-  baseUrl: "http://.../v1",     // optional override
-  model: "...",                 // optional override
-  includeTranscript: false       // optional debug output in details
+  query: "Where is JSON-RPC caching implemented?",
+  includeTranscript: false
 })
 ```
 
-## Output
+The repository root always comes from the current Pi session. The model endpoint and search budget are user configuration, not LLM-controlled tool arguments.
 
-The tool returns:
+## Configuration
 
-- `<final_answer>` with compact citations
-- validation summary (`valid citations`, `tool calls`, time, tokens)
-- warnings if the model failed to close the tag or returned too many citations
+Configuration precedence, from lowest to highest:
+
+1. built-in defaults
+2. `~/.pi/agent/fastcontext.json`
+3. `<repo>/.pi/fastcontext.json`, only for trusted projects
+4. environment variables
+
+Model calls cannot override operational configuration.
 
 Example:
 
-```text
-# FastContext Result
-<final_answer>
-internal/auth/request_auth.go:10-28 — NewAuthRequestStrategy factory
-internal/auth/simple_auth_processors.go:34-60 — simpleAuthProcessor methods
-</final_answer>
-## Validation
-- Valid citations: 2/2
-- Tool calls: 5 (0 failed)
-- Time: 5.5s
+```json
+{
+  "baseUrl": "http://127.0.0.1:8770/v1",
+  "model": "qwen38-flash-next-q4-nothink-p1",
+  "maxTurns": 3,
+  "maxTokens": 512
+}
 ```
 
-## When to use
+Environment variables remain:
 
-Good fit:
+```bash
+FASTCONTEXT_BASE_URL=http://127.0.0.1:8770/v1
+FASTCONTEXT_MODEL=qwen38-flash-next-q4-nothink-p1
+FASTCONTEXT_MAX_TURNS=3
+FASTCONTEXT_MAX_TOKENS=512
+```
 
-- quick symbol/file localization
-- exact `file:line` evidence before planning or editing
-- first pass over an unfamiliar code area
+## Security and protocol
 
-Not a full replacement for Pi's `context-builder`:
+- The endpoint must be an HTTP loopback URL; repository evidence is never sent to a remote host.
+- The search root is fixed to the current Pi session directory.
+- Paths must be relative to the repository root.
+- Absolute paths and `..` traversal are rejected rather than corrected.
+- Symlinks are ignored during discovery and rejected when addressed directly.
+- Binary, unsupported, and files larger than 2 MB are not read.
+- Common generated/vendor directories are skipped.
+- GREP runs through ripgrep's linear-time regex engine with a 5-second deadline.
+- Multiple sibling model tool calls execute concurrently.
+- Returned citations are checked against real files and line bounds.
+- Invalid citation lines are removed.
 
-- deep architecture synthesis
-- external research
-- implementation plans
-- broad product/spec reasoning
+## Output
 
-Use `fast_context_search` first, then escalate to a normal context builder if the query is broad or the warnings indicate low confidence.
+```text
+# FastContext Result
+
+<final_answer>
+src/auth/request.ts:18-34 — request authentication entry point
+src/auth/session.ts:55-71 — session validation
+</final_answer>
+
+## Validation
+- Valid citations: 2
+- Tool calls: 4 (0 failed)
+- Model passes: 4
+- Time: 24.8s
+- Tokens: prompt 10264, completion 327, cached 4200
+```
+
+Nested model usage is attached to the Pi tool result, so it is included in session usage accounting.
 
 ## Development
 
-For local testing without installing:
+```bash
+npm install
+npm run check
+npm test
+```
+
+Run the local extension without installing it:
 
 ```bash
 pi -e ~/Work/pi-fastcontext -p --no-session \
   --tools fast_context_search \
-  "Use fast_context_search to find where auth processors are implemented"
+  "Use fast_context_search to locate the repository search loop."
 ```
-
-To make Pi load the local checkout globally:
-
-```bash
-pi install ~/Work/pi-fastcontext
-# or edit ~/.pi/agent/settings.json packages manually
-```
-
-Reload an existing Pi session with `/reload` after changing the extension.
