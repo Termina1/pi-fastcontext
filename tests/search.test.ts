@@ -35,7 +35,18 @@ test("search executes sibling repository tools and forces a validated final answ
             usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 10 } },
           }
         : {
-            choices: [{ message: { role: "assistant", content: "<final_answer>\nsrc/auth.ts:1-2 — authentication implementation\n</final_answer>" } }],
+            choices: [{ message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [{
+                id: "final_1",
+                type: "function",
+                function: {
+                  name: "FINAL_ANSWER",
+                  arguments: JSON.stringify({ citations: [{ path: "src/auth.ts", start: 1, end: 2, reason: "authentication implementation" }] }),
+                },
+              }],
+            } }],
             usage: { prompt_tokens: 150, completion_tokens: 15, prompt_tokens_details: { cached_tokens: 80 } },
           };
       response.writeHead(200, { "Content-Type": "application/json" });
@@ -71,7 +82,11 @@ test("search executes sibling repository tools and forces a validated final answ
     assert.match(result.text, /## Model passes/);
     assert.deepEqual(requests[0].chat_template_kwargs, { enable_thinking: false });
     assert(Array.isArray(requests[0].tools));
-    assert.equal(requests[1].tools, undefined);
+    assert.deepEqual(requests[1].tools, requests[0].tools);
+    assert.deepEqual(requests[1].tool_choice, {
+      type: "function",
+      function: { name: "FINAL_ANSWER" },
+    });
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
