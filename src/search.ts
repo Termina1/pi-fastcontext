@@ -262,16 +262,17 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
 
   if (!rawFinal) {
     options.onUpdate?.({
-      content: [{ type: "text", text: "Formatting repository evidence…" }],
+      content: [{ type: "text", text: "Synthesizing final citations…" }],
       details: { phase: "final" },
     });
     messages.push({
       role: "user",
       content: `Stop searching. Using only evidence already returned, produce <final_answer> with at most ${MAX_FINAL_CITATIONS} concrete relative file:START-END citations, ordered most relevant first. Close </final_answer>.`,
     });
+    messages.push({ role: "assistant", content: "<final_answer>\n", partial: true });
     const passStarted = performance.now();
     const messageCount = messages.length;
-    const response = await chat(options, messages, undefined);
+    const response = await chat(options, messages, repositoryTools);
     const passElapsedMs = performance.now() - passStarted;
     const { message, usage: responseUsage } = firstChoice(response);
     const passUsage = addUsage(usage, responseUsage);
@@ -286,7 +287,10 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
       toolResultChars: 0,
     });
     transcript.push({ turn: "final", response: options.includeTranscript ? response : undefined });
-    const extracted = extractFinal(String(message.content ?? ""));
+    const content = String(message.content ?? "");
+    const extracted = extractFinal(
+      content.toLowerCase().includes("<final_answer") ? content : `<final_answer>\n${content}`,
+    );
     rawFinal = extracted.final;
     partialFinal = extracted.partial;
     if (!rawFinal) warnings.push("Final response did not contain <final_answer>");
