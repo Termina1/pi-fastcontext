@@ -48,21 +48,6 @@ function normalizeToolCalls(message: Record<string, unknown>): ToolCall[] {
   });
 }
 
-function finalFromToolCall(call: ToolCall | undefined): string {
-  if (!call || call.name.toUpperCase() !== "FINAL_ANSWER" || call.arguments._parseError !== undefined) return "";
-  const rawCitations = Array.isArray(call.arguments.citations) ? call.arguments.citations : [];
-  return rawCitations.slice(0, MAX_FINAL_CITATIONS).flatMap((raw) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
-    const item = raw as Record<string, unknown>;
-    const path = String(item.path ?? "").trim();
-    const start = Number(item.start);
-    const end = Number(item.end);
-    const reason = String(item.reason ?? "relevant implementation").replace(/[\r\n]+/g, " ").trim();
-    if (!path || !Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start) return [];
-    return [`${path}:${start}${end === start ? "" : `-${end}`} — ${reason}`];
-  }).join("\n");
-}
-
 async function validateFinal(repository: Repository, rawFinal: string): Promise<{ final: string; citations: Citation[]; dropped: number }> {
   const keptLines: string[] = [];
   const citations: Citation[] = [];
@@ -121,7 +106,6 @@ async function chat(
   options: Pick<SearchRunOptions, "baseUrl" | "model" | "maxTokens" | "signal">,
   messages: ChatMessage[],
   tools: typeof repositoryTools | undefined,
-  toolChoice: unknown = "auto",
 ): Promise<Record<string, unknown>> {
   const body: Record<string, unknown> = {
     model: options.model,
@@ -132,7 +116,7 @@ async function chat(
   };
   if (tools) {
     body.tools = tools;
-    body.tool_choice = toolChoice;
+    body.tool_choice = "auto";
   }
 
   const response = await fetch(`${options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
@@ -230,18 +214,12 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
 
     const calls = normalizeToolCalls(message);
     passDiagnostic.requestedToolCalls = calls.length;
-    const submittedFinal = finalFromToolCall(calls.find((call) => call.name.toUpperCase() === "FINAL_ANSWER"));
-    if (submittedFinal) {
-      rawFinal = submittedFinal;
-      break;
-    }
     if (!calls.length) {
       warnings.push(`Turn ${turn} returned neither tools nor a final answer`);
       break;
     }
 
-    const repositoryCalls = calls.filter((call) => call.name.toUpperCase() !== "FINAL_ANSWER");
-    const results = await Promise.all(repositoryCalls.map(async (call) => {
+    const results = await Promise.all(calls.map(async (call) => {
       toolCalls += 1;
       const toolStarted = performance.now();
       let repeatedRead = false;
@@ -284,21 +262,16 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
 
   if (!rawFinal) {
     options.onUpdate?.({
-      content: [{ type: "text", text: "Synthesizing final citations…" }],
+      content: [{ type: "text", text: "Formatting repository evidence…" }],
       details: { phase: "final" },
     });
     messages.push({
       role: "user",
-      content: `Stop searching. Using only evidence already returned, call FINAL_ANSWER with at most ${MAX_FINAL_CITATIONS} concrete relative file and line-range citations, ordered most relevant first.`,
+      content: `Stop searching. Using only evidence already returned, produce <final_answer> with at most ${MAX_FINAL_CITATIONS} concrete relative file:START-END citations, ordered most relevant first. Close </final_answer>.`,
     });
     const passStarted = performance.now();
     const messageCount = messages.length;
-    // Keep the identical tool schema for prefix-cache reuse while forcing a
-    // structured terminal action instead of allowing another repository call.
-    const response = await chat(options, messages, repositoryTools, {
-      type: "function",
-      function: { name: "FINAL_ANSWER" },
-    });
+    const response = await chat(options, messages, undefined);
     const passElapsedMs = performance.now() - passStarted;
     const { message, usage: responseUsage } = firstChoice(response);
     const passUsage = addUsage(usage, responseUsage);
@@ -313,14 +286,10 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
       toolResultChars: 0,
     });
     transcript.push({ turn: "final", response: options.includeTranscript ? response : undefined });
-    const finalCalls = normalizeToolCalls(message);
-    rawFinal = finalFromToolCall(finalCalls.find((call) => call.name.toUpperCase() === "FINAL_ANSWER"));
-    if (!rawFinal) {
-      const extracted = extractFinal(String(message.content ?? ""));
-      rawFinal = extracted.final;
-      partialFinal = extracted.partial;
-    }
-    if (!rawFinal) warnings.push("Final response did not call FINAL_ANSWER");
+    const extracted = extractFinal(String(message.content ?? ""));
+    rawFinal = extracted.final;
+    partialFinal = extracted.partial;
+    if (!rawFinal) warnings.push("Final response did not contain <final_answer>");
   }
 
   const validated = rawFinal
