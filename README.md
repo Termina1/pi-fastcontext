@@ -68,16 +68,17 @@ Or invoke the command:
 /fastcontext locate request authentication
 ```
 
-The public tool accepts only the search query and an optional transcript flag:
+The public tool accepts a query, an optional repository root, and an optional transcript flag:
 
 ```ts
 fast_context_search({
   query: "Where is JSON-RPC caching implemented?",
+  cwd: "/path/to/repository", // current Pi cwd when omitted
   includeTranscript: false
 })
 ```
 
-The repository root always comes from the current Pi session. The model endpoint and search budget are user configuration, not LLM-controlled tool arguments.
+When `cwd` is provided, the search runs in that directory. The model endpoint and search budget remain user configuration rather than tool arguments.
 
 ## Configuration
 
@@ -88,7 +89,7 @@ Configuration precedence, from lowest to highest:
 3. `<repo>/.pi/fastcontext.json`, only for trusted projects
 4. environment variables
 
-Model calls cannot override operational configuration.
+Model calls cannot override the model endpoint or search budget.
 
 Example:
 
@@ -113,7 +114,7 @@ FASTCONTEXT_MAX_TOKENS=512
 ## Security and protocol
 
 - The endpoint must be an HTTP loopback URL; repository evidence is never sent to a remote host.
-- The search root is fixed to the current Pi session directory.
+- The search root is the requested `cwd`, or the current Pi session directory when omitted.
 - Paths must be relative to the repository root.
 - Absolute paths and `..` traversal are rejected rather than corrected.
 - Symlinks are ignored during discovery and rejected when addressed directly.

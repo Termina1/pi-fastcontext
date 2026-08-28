@@ -28,11 +28,12 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Natural-language repository search query." }),
+      cwd: Type.Optional(Type.String({ description: "Repository root. Uses the current Pi cwd when omitted." })),
       includeTranscript: Type.Optional(Type.Boolean({ description: "Include the complete nested model/tool transcript in result details." })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const cwd = ctx.cwd;
-      const config = await resolveConfig(cwd, {}, { allowProjectConfig: ctx.isProjectTrusted() });
+      const cwd = params.cwd || ctx.cwd;
+      const config = await resolveConfig(cwd, {}, { allowProjectConfig: ctx.isProjectTrusted() && cwd === ctx.cwd });
       const result = await runSearch({
         ...config,
         query: params.query,
