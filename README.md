@@ -141,9 +141,14 @@ src/auth/session.ts:55-71 — session validation
 - Model passes: 4
 - Time: 24.8s
 - Tokens: prompt 10264, completion 327, cached 4200
+
+## Model passes
+- #1 search turn 1: 5.8s; prompt 1200, completion 90, cached 0; messages 2; tools 2; results 4100 chars
+- #2 search turn 2: 6.1s; prompt 3100, completion 80, cached 900; messages 5; tools 1; results 2200 chars
+- Repository tools: 0.018s cumulative; 6300 result chars; 0 overlapping READ(s)
 ```
 
-Nested model usage is attached to the Pi tool result, so it is included in session usage accounting.
+Per-pass latency, tokens, message count, requested tools, tool-result size, individual tool timing, and overlapping READ diagnostics are also attached as structured result details. Nested model usage is included in session usage accounting.
 
 ## Development
 

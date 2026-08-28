@@ -63,6 +63,12 @@ test("search executes sibling repository tools and forces a validated final answ
     assert.equal(result.details.final, "src/auth.ts:1-2 — authentication implementation");
     assert.equal(result.details.usage.modelPasses, 2);
     assert.equal(result.details.usage.cachedTokens, 90);
+    assert.equal(result.details.modelPasses.length, 2);
+    assert.equal(result.details.modelPasses[0].requestedToolCalls, 3);
+    assert(result.details.modelPasses[0].toolResultChars > 0);
+    assert.equal(result.details.modelPasses[1].phase, "final");
+    assert.equal(result.details.toolDiagnostics.length, 3);
+    assert.match(result.text, /## Model passes/);
     assert.deepEqual(requests[0].chat_template_kwargs, { enable_thinking: false });
     assert(Array.isArray(requests[0].tools));
     assert.equal(requests[1].tools, undefined);

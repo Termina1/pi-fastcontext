@@ -1,6 +1,15 @@
 import { Repository } from "./repository.ts";
 import { MAX_FINAL_CITATIONS, repositoryTools, systemPrompt } from "./protocol.ts";
-import type { ChatMessage, Citation, SearchRunOptions, SearchRunResult, SearchUsage, ToolCall } from "./types.ts";
+import type {
+  ChatMessage,
+  Citation,
+  ModelPassDiagnostic,
+  SearchRunOptions,
+  SearchRunResult,
+  SearchUsage,
+  ToolCall,
+  ToolCallDiagnostic,
+} from "./types.ts";
 
 const CITATION_PATTERN = /(\/?(?:[A-Za-z0-9_.+@ -]+\/)*[A-Za-z0-9_.+@ -]+):(\d+)(?:-(\d+))?/g;
 
@@ -132,14 +141,24 @@ function firstChoice(response: Record<string, unknown>): { message: Record<strin
   return { message, usage };
 }
 
-function addUsage(total: SearchUsage, usage: Record<string, unknown>): void {
-  total.promptTokens += Number(usage.prompt_tokens ?? 0);
-  total.completionTokens += Number(usage.completion_tokens ?? 0);
+function usageNumbers(usage: Record<string, unknown>): Omit<SearchUsage, "modelPasses"> {
   const details = usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object"
     ? usage.prompt_tokens_details as Record<string, unknown>
     : {};
-  total.cachedTokens += Number(details.cached_tokens ?? 0);
+  return {
+    promptTokens: Number(usage.prompt_tokens ?? 0),
+    completionTokens: Number(usage.completion_tokens ?? 0),
+    cachedTokens: Number(details.cached_tokens ?? 0),
+  };
+}
+
+function addUsage(total: SearchUsage, usage: Record<string, unknown>): Omit<SearchUsage, "modelPasses"> {
+  const current = usageNumbers(usage);
+  total.promptTokens += current.promptTokens;
+  total.completionTokens += current.completionTokens;
+  total.cachedTokens += current.cachedTokens;
   total.modelPasses += 1;
+  return current;
 }
 
 export async function runSearch(options: SearchRunOptions): Promise<SearchRunResult> {
@@ -151,6 +170,9 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
   const transcript: unknown[] = [];
   const warnings: string[] = [];
   const usage: SearchUsage = { promptTokens: 0, completionTokens: 0, cachedTokens: 0, modelPasses: 0 };
+  const modelPasses: ModelPassDiagnostic[] = [];
+  const toolDiagnostics: ToolCallDiagnostic[] = [];
+  const readRanges = new Map<string, Array<{ start: number; end: number }>>();
   let toolCalls = 0;
   let failedTools = 0;
   let rawFinal = "";
@@ -163,9 +185,23 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
       content: [{ type: "text", text: `Repository search ${turn}/${options.maxTurns}…` }],
       details: { phase: "search", turn, maxTurns: options.maxTurns },
     });
+    const passStarted = performance.now();
+    const messageCount = messages.length;
     const response = await chat(options, messages, repositoryTools);
+    const passElapsedMs = performance.now() - passStarted;
     const { message, usage: responseUsage } = firstChoice(response);
-    addUsage(usage, responseUsage);
+    const passUsage = addUsage(usage, responseUsage);
+    const passDiagnostic: ModelPassDiagnostic = {
+      pass: usage.modelPasses,
+      phase: "search",
+      turn,
+      elapsedMs: passElapsedMs,
+      ...passUsage,
+      messageCount,
+      requestedToolCalls: 0,
+      toolResultChars: 0,
+    };
+    modelPasses.push(passDiagnostic);
     transcript.push({ turn, response: options.includeTranscript ? response : undefined });
     messages.push(message);
 
@@ -177,6 +213,7 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
     }
 
     const calls = normalizeToolCalls(message);
+    passDiagnostic.requestedToolCalls = calls.length;
     if (!calls.length) {
       warnings.push(`Turn ${turn} returned neither tools nor a final answer`);
       break;
@@ -184,15 +221,38 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
 
     const results = await Promise.all(calls.map(async (call) => {
       toolCalls += 1;
+      const toolStarted = performance.now();
+      let repeatedRead = false;
+      if (call.name.toUpperCase() === "READ" && call.arguments._parseError === undefined) {
+        const readPath = String(call.arguments.path ?? "");
+        const start = Math.max(1, Number(call.arguments.offset ?? 1) || 1);
+        const limit = Math.max(1, Number(call.arguments.limit ?? 120) || 120);
+        const end = start + limit - 1;
+        const previous = readRanges.get(readPath) ?? [];
+        repeatedRead = previous.some((range) => start <= range.end && end >= range.start);
+        previous.push({ start, end });
+        readRanges.set(readPath, previous);
+      }
+
       let result: string;
       if (call.arguments._parseError !== undefined) {
         result = `ERR: invalid JSON tool arguments: ${String(call.arguments._parseError).slice(0, 500)}`;
       } else {
         result = await repository.execute(call);
       }
-      if (result.startsWith("ERR:")) failedTools += 1;
+      const failed = result.startsWith("ERR:");
+      if (failed) failedTools += 1;
+      toolDiagnostics.push({
+        turn,
+        name: call.name.toUpperCase(),
+        elapsedMs: performance.now() - toolStarted,
+        resultChars: result.length,
+        failed,
+        repeatedRead,
+      });
       return { call, result };
     }));
+    passDiagnostic.toolResultChars = results.reduce((total, item) => total + item.result.length, 0);
 
     for (const { call, result } of results) {
       transcript.push({ turn, tool: call, result: options.includeTranscript ? result : result.slice(0, 500) });
@@ -209,9 +269,22 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
       role: "user",
       content: `Stop searching. Using only evidence already returned, produce <final_answer> with at most ${MAX_FINAL_CITATIONS} concrete relative file:START-END citations, ordered most relevant first. Close </final_answer>.`,
     });
+    const passStarted = performance.now();
+    const messageCount = messages.length;
     const response = await chat(options, messages, undefined);
+    const passElapsedMs = performance.now() - passStarted;
     const { message, usage: responseUsage } = firstChoice(response);
-    addUsage(usage, responseUsage);
+    const passUsage = addUsage(usage, responseUsage);
+    modelPasses.push({
+      pass: usage.modelPasses,
+      phase: "final",
+      turn: "final",
+      elapsedMs: passElapsedMs,
+      ...passUsage,
+      messageCount,
+      requestedToolCalls: 0,
+      toolResultChars: 0,
+    });
     transcript.push({ turn: "final", response: options.includeTranscript ? response : undefined });
     const extracted = extractFinal(String(message.content ?? ""));
     rawFinal = extracted.final;
@@ -227,6 +300,13 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
   if (!validated.final) warnings.push("No valid final answer produced");
 
   const elapsedMs = performance.now() - started;
+  const totalToolMs = toolDiagnostics.reduce((total, diagnostic) => total + diagnostic.elapsedMs, 0);
+  const totalToolResultChars = toolDiagnostics.reduce((total, diagnostic) => total + diagnostic.resultChars, 0);
+  const repeatedReads = toolDiagnostics.filter((diagnostic) => diagnostic.repeatedRead).length;
+  const passLines = modelPasses.map((diagnostic) => {
+    const phase = diagnostic.phase === "final" ? "final" : `search turn ${diagnostic.turn}`;
+    return `- #${diagnostic.pass} ${phase}: ${(diagnostic.elapsedMs / 1_000).toFixed(1)}s; prompt ${diagnostic.promptTokens}, completion ${diagnostic.completionTokens}, cached ${diagnostic.cachedTokens}; messages ${diagnostic.messageCount}; tools ${diagnostic.requestedToolCalls}; results ${diagnostic.toolResultChars} chars`;
+  });
   const text = [
     "# FastContext Result",
     "",
@@ -238,6 +318,10 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
     `- Model passes: ${usage.modelPasses}`,
     `- Time: ${(elapsedMs / 1_000).toFixed(1)}s`,
     `- Tokens: prompt ${usage.promptTokens}, completion ${usage.completionTokens}, cached ${usage.cachedTokens}`,
+    "",
+    "## Model passes",
+    ...passLines,
+    `- Repository tools: ${(totalToolMs / 1_000).toFixed(3)}s cumulative; ${totalToolResultChars} result chars; ${repeatedReads} overlapping READ(s)`,
     warnings.length ? `\n## Warnings\n${warnings.map((warning) => `- ${warning}`).join("\n")}` : "",
   ].filter(Boolean).join("\n");
 
@@ -254,6 +338,8 @@ export async function runSearch(options: SearchRunOptions): Promise<SearchRunRes
       failedTools,
       elapsedMs,
       usage,
+      modelPasses,
+      toolDiagnostics,
       warnings,
       transcript: options.includeTranscript ? transcript : undefined,
     },

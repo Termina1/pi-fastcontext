@@ -31,6 +31,28 @@ export type SearchUsage = {
   modelPasses: number;
 };
 
+export type ModelPassDiagnostic = {
+  pass: number;
+  phase: "search" | "final";
+  turn: number | "final";
+  elapsedMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  messageCount: number;
+  requestedToolCalls: number;
+  toolResultChars: number;
+};
+
+export type ToolCallDiagnostic = {
+  turn: number;
+  name: string;
+  elapsedMs: number;
+  resultChars: number;
+  failed: boolean;
+  repeatedRead: boolean;
+};
+
 export type SearchRunOptions = SearchConfig & {
   query: string;
   cwd: string;
@@ -52,6 +74,8 @@ export type SearchRunResult = {
     failedTools: number;
     elapsedMs: number;
     usage: SearchUsage;
+    modelPasses: ModelPassDiagnostic[];
+    toolDiagnostics: ToolCallDiagnostic[];
     warnings: string[];
     transcript?: unknown[];
   };
